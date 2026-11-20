@@ -1,0 +1,8 @@
+{
+  "name": "t1-npm-override",
+  "private": true,
+  "version": "1.0.0",
+  "overrides": {
+    "picomatch": "npm:@ryotsu/picomatch@4.0.7-a"
+  }
+}

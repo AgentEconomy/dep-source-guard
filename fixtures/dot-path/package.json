@@ -1,0 +1,8 @@
+{
+  "name": "dot-path",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "foo": "./x"
+  }
+}

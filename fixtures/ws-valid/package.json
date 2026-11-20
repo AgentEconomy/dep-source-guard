@@ -1,0 +1,8 @@
+{
+  "name": "ws-valid",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "packages/*"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "inbundle-git-under-link-parent",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "packages/*"
+  ]
+}

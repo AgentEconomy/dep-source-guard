@@ -1,0 +1,8 @@
+{
+  "name": "ws-glob-matches-dotdot",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "packages/foo/../bar"
+  ]
+}

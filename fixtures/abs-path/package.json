@@ -1,0 +1,8 @@
+{
+  "name": "abs-path",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "foo": "/x"
+  }
+}
