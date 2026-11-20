@@ -57,6 +57,10 @@ const FORBIDDEN_LOCK_NAMES = new Set([
 
 const ROOT_LOCK_NAMES = new Set(['package-lock.json', 'npm-shrinkwrap.json']);
 
+const MIB = 1024 * 1024;
+// Bound recursion in dependency specs and lockfile comparisons.
+const MAX_JSON_DEPTH = 128;
+
 const ZERO_SHA_RE = /^0+$/;
 
 function pushFinding(findings, code, key, reason) {
@@ -85,7 +89,7 @@ function posixRel(from, to) {
 
 function staysInsideRoot(rootReal, absPath) {
   const relToRoot = relative(rootReal, absPath);
-  return !(relToRoot.startsWith('..') || isAbsolute(relToRoot));
+  return !((relToRoot === '..' || relToRoot.startsWith(`..${sep}`)) || isAbsolute(relToRoot));
 }
 
 function isAbsoluteLike(p) {
@@ -100,12 +104,13 @@ function hasDotDotSegment(p) {
     .includes('..');
 }
 
-function canonicalize(value) {
+function canonicalize(value, depth = 0) {
+  if (depth > MAX_JSON_DEPTH) throw new RangeError('JSON nesting limit exceeded');
   if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(canonicalize);
+  if (Array.isArray(value)) return value.map((item) => canonicalize(item, depth + 1));
   const out = {};
   for (const key of Object.keys(value).sort()) {
-    out[key] = canonicalize(value[key]);
+    out[key] = canonicalize(value[key], depth + 1);
   }
   return out;
 }
@@ -190,7 +195,11 @@ function classifyManifestSpec(spec) {
   return null;
 }
 
-function walkSpecs(value, keyPath, findings) {
+function walkSpecs(value, keyPath, findings, depth = 0) {
+  if (depth > MAX_JSON_DEPTH) {
+    failClosed(findings, keyPath, 'JSON nesting limit exceeded');
+    return;
+  }
   if (value == null) return;
   if (typeof value === 'string') {
     const code = classifyManifestSpec(value);
@@ -203,13 +212,13 @@ function walkSpecs(value, keyPath, findings) {
   }
   if (Array.isArray(value)) {
     value.forEach((item, index) => {
-      walkSpecs(item, `${keyPath}[${index}]`, findings);
+      walkSpecs(item, `${keyPath}[${index}]`, findings, depth + 1);
     });
     return;
   }
   if (typeof value === 'object') {
     for (const [k, v] of Object.entries(value)) {
-      walkSpecs(v, `${keyPath}.${k}`, findings);
+      walkSpecs(v, `${keyPath}.${k}`, findings, depth + 1);
     }
   }
 }
@@ -407,59 +416,63 @@ function isRegistryConfigKey(key) {
 
 const ALLOWED_REPLACE_REGISTRY_HOST = new Set(['default', 'never', 'npmjs']);
 
-function checkNpmConfigText(text, source, findings) {
-  if (typeof text !== 'string' || text.length === 0) return;
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
+const ALLOWED_HIDDEN_KEYS = new Set(
+  ['_authToken', '_auth', '_password', 'username', 'email']
+    .map((key) => `//${ALLOWED_REGISTRY_HOST}/:${key}`),
+);
+
+function resolveConfigPath(root, value) {
+  const abs = resolve(root, value);
+  const ancestor = nearestExistingAncestor(abs);
+  return resolve(realpathSync(ancestor), relative(ancestor, abs));
+}
+
+function checkNpmConfigText(text, json, pass, findings) {
+  for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('#')) continue;
     const eq = trimmed.indexOf('=');
     if (eq <= 0) continue;
     const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
+    const raw = trimmed.slice(eq + 1).trim();
+    const parsed = parseJson(raw);
+    const value = parsed.ok ? parsed.value
+      : raw.startsWith("'") && raw.endsWith("'") ? raw.slice(1, -1) : raw;
+    if (json && !Object.hasOwn(json, key) && !ALLOWED_HIDDEN_KEYS.has(key)) {
+      pushFinding(findings, 'F6', `npm-config:${pass.source}:${key}`, 'hidden config key');
     }
-    if (!isRegistryConfigKey(key)) continue;
-    if (value.includes('***') || value.includes('@')) {
-      if (value.includes('***') || /https?:\/\/[^/]*@/.test(value)) {
-        pushFinding(
-          findings,
-          'F6',
-          `npm-config:${source}:${key}`,
-          'registry URL has userinfo',
-        );
-        continue;
-      }
-    }
-    if (!isAllowedRegistryUrl(value)) {
-      pushFinding(
-        findings,
-        'F6',
-        `npm-config:${source}:${key}`,
-        registryRejectReason(value),
-      );
-    }
+    checkNpmConfigObject({ [key]: value }, pass, findings, raw.includes('***'));
   }
 }
 
-function checkNpmConfigObject(cfg, source, findings) {
-  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
-    failClosed(findings, `npm-config:${source}`, 'unparsable npm config');
-    return;
-  }
-  if (!Object.hasOwn(cfg, 'registry')) {
-    pushFinding(
-      findings,
-      'F6',
-      `npm-config:${source}:registry`,
-      'registry is protected or missing',
-    );
-  }
+function checkNpmConfigObject(cfg, { root, rootReal, home, source }, findings, redacted = false) {
   for (const [key, value] of Object.entries(cfg)) {
+    const base = configBasename(key);
+    if (redacted || value === '(protected)') {
+      if (isRegistryConfigKey(key) || [
+        'strict-ssl', 'proxy', 'https-proxy', 'http-proxy', 'noproxy', 'no-proxy',
+        'ca', 'cafile', 'cert', 'replace-registry-host', 'cache',
+      ].includes(base)) {
+        pushFinding(findings, 'F6', `npm-config:${source}:${key}`, 'redacted value');
+        continue;
+      }
+    }
+    if (key.toLowerCase() === 'cache') {
+      let allowed = false;
+      try {
+        if (typeof value === 'string' && value.trim() && home) {
+          const cache = resolveConfigPath(root, value);
+          const defaultCache = resolveConfigPath(root, join(home, '.npm'));
+          allowed = cache === defaultCache && !staysInsideRoot(rootReal, cache);
+        }
+      } catch {
+        // Treat an unresolvable cache as an override.
+      }
+      if (!allowed) {
+        pushFinding(findings, 'F6', `npm-config:${source}:cache`, 'cache override');
+      }
+      continue;
+    }
     if (isRegistryConfigKey(key)) {
       if (!isAllowedRegistryUrl(value)) {
         pushFinding(
@@ -471,7 +484,6 @@ function checkNpmConfigObject(cfg, source, findings) {
       }
       continue;
     }
-    const base = configBasename(key);
     if (base === 'strict-ssl' && isFalseConfigValue(value)) {
       pushFinding(findings, 'F6', `npm-config:${source}:${key}`, 'strict-ssl=false');
       continue;
@@ -509,13 +521,43 @@ function checkNpmConfigObject(cfg, source, findings) {
 }
 
 function runNpmConfigList(root, env, extraArgs) {
-  return spawnSync('npm', ['config', 'list', '--json', ...extraArgs], {
+  return spawnSync('npm', ['config', 'list', ...extraArgs], {
     cwd: root,
-    env,
+    env: { ...env, NODE_AUTH_TOKEN: env.NODE_AUTH_TOKEN || 'dsg-placeholder' },
     encoding: 'utf8',
     timeout: 30_000,
     maxBuffer: 20 * 1024 * 1024,
   });
+}
+
+function checkNpmConfigPass(pass, env, args, findings) {
+  const { root, source } = pass;
+  const key = `npm-config:${source}`;
+  const json = runNpmConfigList(root, env, ['--json', ...args]);
+  const text = runNpmConfigList(root, env, ['--no-json', ...args]);
+  const textOk = !text.error && text.status === 0 && text.stdout?.trim();
+  if (!textOk) {
+    failClosed(findings, key, 'npm config text listing failed or was empty');
+  }
+  let cfg = null;
+  if (json.error?.code === 'ENOENT') {
+    failClosed(findings, 'npm', 'npm is missing');
+  } else if (json.error || json.status !== 0) {
+    failClosed(findings, key, 'npm config list exited non-zero');
+  } else {
+    cfg = parseNpmConfigJson(json.stdout);
+    if (!cfg) failClosed(findings, key, 'unparsable npm config');
+  }
+  if (cfg) {
+    if (!Object.hasOwn(cfg, 'registry')) {
+      pushFinding(findings, 'F6', `${key}:registry`, 'registry is protected or missing');
+    }
+    if (!Object.hasOwn(cfg, 'cache')) {
+      pushFinding(findings, 'F6', `${key}:cache`, 'cache override or missing');
+    }
+    checkNpmConfigObject(cfg, pass, findings);
+  }
+  if (textOk) checkNpmConfigText(text.stdout, cfg, pass, findings);
 }
 
 /**
@@ -526,7 +568,10 @@ function runNpmConfigList(root, env, extraArgs) {
  * npm 10 refuses --userconfig=/dev/null --globalconfig=/dev/null (same inode
  * double-load), so the scrubbed pass uses two empty files in the temp HOME.
  */
-function checkNpmConfigPasses(root, findings) {
+function checkNpmConfigPasses(root, rootReal, findings) {
+  for (const key of ['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'https_proxy', 'http_proxy', 'all_proxy']) {
+    if (process.env[key]) pushFinding(findings, 'F6', `env:${key}`, 'proxy environment variable');
+  }
   let tempHome;
   try {
     tempHome = mkdtempSync(join(tmpdir(), 'dsg-home-'));
@@ -547,53 +592,14 @@ function checkNpmConfigPasses(root, findings) {
       '--globalconfig',
       globalconfig,
     ];
-    const scrubbed = runNpmConfigList(root, scrubbedEnv, scrubbedArgs);
-    if (scrubbed.error && scrubbed.error.code === 'ENOENT') {
-      failClosed(findings, 'npm', 'npm is missing');
-    } else if (scrubbed.status !== 0) {
-      failClosed(findings, 'npm-config:scrubbed', 'npm config list exited non-zero');
-    } else {
-      const cfg = parseNpmConfigJson(scrubbed.stdout);
-      if (!cfg) {
-        failClosed(findings, 'npm-config:scrubbed', 'unparsable npm config');
-      } else {
-        checkNpmConfigObject(cfg, 'scrubbed', findings);
-      }
-    }
-    const scrubbedText = spawnSync('npm', ['config', 'list', ...scrubbedArgs], {
-      cwd: root,
-      env: scrubbedEnv,
-      encoding: 'utf8',
-      timeout: 30_000,
-      maxBuffer: 20 * 1024 * 1024,
-    });
-    if (scrubbedText.status === 0) {
-      checkNpmConfigText(scrubbedText.stdout, 'scrubbed', findings);
-    }
-
-    const real = runNpmConfigList(root, process.env, []);
-    if (real.error && real.error.code === 'ENOENT') {
-      failClosed(findings, 'npm', 'npm is missing');
-    } else if (real.status !== 0) {
-      failClosed(findings, 'npm-config:effective', 'npm config list exited non-zero');
-    } else {
-      const cfg = parseNpmConfigJson(real.stdout);
-      if (!cfg) {
-        failClosed(findings, 'npm-config:effective', 'unparsable npm config');
-      } else {
-        checkNpmConfigObject(cfg, 'effective', findings);
-      }
-    }
-    const realText = spawnSync('npm', ['config', 'list'], {
-      cwd: root,
-      env: process.env,
-      encoding: 'utf8',
-      timeout: 30_000,
-      maxBuffer: 20 * 1024 * 1024,
-    });
-    if (realText.status === 0) {
-      checkNpmConfigText(realText.stdout, 'effective', findings);
-    }
+    checkNpmConfigPass(
+      { root, rootReal, home: tempHome, source: 'scrubbed' },
+      scrubbedEnv, scrubbedArgs, findings,
+    );
+    checkNpmConfigPass(
+      { root, rootReal, home: process.env.HOME, source: 'effective' },
+      process.env, [], findings,
+    );
   } catch {
     failClosed(findings, 'npm-config', 'npm config check failed');
   } finally {
@@ -917,7 +923,15 @@ function checkLockfiles(root, rootReal, workspaceSet, findings) {
     const lock = loadLockObject(lockPath, 'package-lock.json', findings);
     const shrink = loadLockObject(shrinkPath, 'npm-shrinkwrap.json', findings);
     if (!lock || !shrink) return;
-    if (!canonicalEqual(lock, shrink)) {
+    let equal;
+    try {
+      equal = canonicalEqual(lock, shrink);
+    } catch (err) {
+      if (!(err instanceof RangeError)) throw err;
+      failClosed(findings, 'npm-shrinkwrap.json', 'JSON nesting limit exceeded');
+      return;
+    }
+    if (!equal) {
       failClosed(findings, 'npm-shrinkwrap.json', 'differs from package-lock.json');
       return;
     }
@@ -963,6 +977,12 @@ function checkForbiddenLockfiles(rootReal, findings) {
     } catch {
       failClosed(findings, posixRel(rootReal, dir) || '.', 'unreadable directory');
       continue;
+    }
+    if (
+      entries.some((entry) => entry.name === 'index-v5') &&
+      entries.some((entry) => entry.name === 'content-v2')
+    ) {
+      failClosed(findings, posixRel(rootReal, dir) || '.', 'committed npm cache');
     }
     for (const ent of entries) {
       if (ent.name === '.' || ent.name === '..') continue;
@@ -1025,36 +1045,46 @@ function parseArgs(argv) {
   return out;
 }
 
-function run(root, baseSha) {
-  const findings = [];
-  let rootReal;
-  try {
-    rootReal = realpathSync(root);
-  } catch {
-    failClosed(findings, 'root', 'realpath failed');
-    for (const finding of findings) printFinding('FAIL', finding);
-    return 1;
-  }
-
-  const pkgPath = join(root, 'package.json');
-  if (!existsSync(pkgPath)) {
-    failClosed(findings, 'package.json', 'missing package.json');
-  }
-  let pkg = null;
-  if (existsSync(pkgPath)) {
-    const parsedPkg = parseJson(readText(pkgPath));
-    if (!parsedPkg.ok || !parsedPkg.value || typeof parsedPkg.value !== 'object' || Array.isArray(parsedPkg.value)) {
-      failClosed(findings, 'package.json', 'parse error');
-    } else {
-      pkg = parsedPkg.value;
+function checkInputFiles(root, findings) {
+  for (const [name, maxSize] of [
+    ['package.json', MIB],
+    ['package-lock.json', 64 * MIB],
+    ['npm-shrinkwrap.json', 64 * MIB],
+    ['.npmrc', MIB],
+  ]) {
+    const stat = lstatSync(join(root, name), { throwIfNoEntry: false });
+    if (!stat) {
+      if (name === 'package.json') failClosed(findings, name, 'missing package.json');
+    } else if (!stat.isFile()) {
+      failClosed(findings, name, 'not a regular file');
+    } else if (stat.size > maxSize) {
+      failClosed(findings, name, 'file exceeds size limit');
     }
   }
+}
 
-  checkForbiddenLockfiles(rootReal, findings);
-  checkNpmConfigPasses(root, findings);
-  const workspaceSet = loadBaseWorkspaceSet(root, rootReal, baseSha, findings);
-  if (pkg) checkManifest(pkg, findings);
-  checkLockfiles(root, rootReal, workspaceSet, findings);
+function run(root, baseSha) {
+  const findings = [];
+  try {
+    const rootReal = realpathSync(root);
+    checkInputFiles(root, findings);
+    if (findings.length === 0) {
+      const parsedPkg = parseJson(readText(join(root, 'package.json')));
+      const pkg = parsedPkg.value;
+      if (!parsedPkg.ok || !pkg || typeof pkg !== 'object' || Array.isArray(pkg)) {
+        failClosed(findings, 'package.json', 'parse error');
+      } else {
+        checkManifest(pkg, findings);
+      }
+
+      checkForbiddenLockfiles(rootReal, findings);
+      checkNpmConfigPasses(root, rootReal, findings);
+      const workspaceSet = loadBaseWorkspaceSet(root, rootReal, baseSha, findings);
+      checkLockfiles(root, rootReal, workspaceSet, findings);
+    }
+  } catch {
+    failClosed(findings, 'root', 'check failed');
+  }
 
   if (findings.length === 0) {
     process.stdout.write('PASS\n');

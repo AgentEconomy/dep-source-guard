@@ -37,7 +37,7 @@ const CASES = [
   { name: 't5-non-npmjs-resolved', expect: 'F3' },
   { name: 't6-lock-name-mismatch', expect: 'F4' },
   { name: 't7-missing-integrity', expect: 'F5' },
-  { name: 't8-evil-npmrc', expect: 'F6' },
+  { name: 't8-evil-npmrc', expect: 'F6', expectKey: 'npm-config:scrubbed:registry' },
   { name: 't9-malformed-lock', expect: 'F7' },
   { name: 't9-missing-lock', expect: 'F7' },
   { name: 't10-allowlisted', expect: 'F1' },
@@ -45,8 +45,8 @@ const CASES = [
   { name: 'p5-root-lock-npm-alias', expect: 'F1' },
   { name: 'p7', expect: 'F2' },
   { name: 'replay-79592d6', expect: ['F1', 'F4'] },
-  { name: 'http-npmrc', expect: 'F6' },
-  { name: 'http-npmrc-scoped', expect: 'F6' },
+  { name: 'http-npmrc', expect: 'F6', expectKey: 'npm-config:scrubbed:registry' },
+  { name: 'http-npmrc-scoped', expect: 'F6', expectKey: 'npm-config:scrubbed:@foo:registry' },
   { name: 'http-publishconfig', expect: 'F6' },
   { name: 'http-resolved', expect: 'F3' },
   { name: 'shrinkwrap-only-clean', expect: 'PASS' },
@@ -65,18 +65,19 @@ const CASES = [
   { name: 'shrinkwrap-v1', expect: 'F7' },
   { name: 'both-equal-but-evil', expect: 'F3' },
   { name: 'shrinkwrap-canon-equal', expect: 'PASS' },
-  { name: 'uppercase-http', expect: 'F6' },
-  { name: 'crlf', expect: 'F6' },
-  { name: 'userinfo', expect: 'F6' },
-  { name: 'protocol-relative', expect: 'F6' },
+  { name: 'uppercase-http', expect: 'F6', expectKey: 'npm-config:scrubbed:registry' },
+  { name: 'crlf', expect: 'F6', expectKey: 'npm-config:scrubbed:registry' },
+  { name: 'userinfo', expect: 'F6', expectKey: 'npm-config:scrubbed:registry' },
+  { name: 'protocol-relative', expect: 'F6', expectKey: 'npm-config:effective:registry' },
   {
     name: 'interpolated-values',
     expect: 'F6',
+    expectKey: 'npm-config:scrubbed:registry',
     env: { INTERP_REG: 'http://interp.example/' },
   },
   { name: 'argv-skip', expect: 'F7', extraArgs: ['--skip'] },
-  { name: 'n8-quoted-registry-key', expect: 'F6' },
-  { name: 'n13-quoted-scoped-key', expect: 'F6' },
+  { name: 'n8-quoted-registry-key', expect: 'F6', expectKey: 'npm-config:scrubbed:registry' },
+  { name: 'n13-quoted-scoped-key', expect: 'F6', expectKey: 'npm-config:scrubbed:@foo:registry' },
   { name: 'd1-key-dotdot-outside', expect: 'F8' },
   { name: 'd2-key-tmp-outside', expect: 'F8' },
   { name: 'd6-symlink-to-tmp', expect: 'F8', setup: 'symlink-tmp' },
@@ -118,21 +119,24 @@ const CASES = [
   {
     name: 'npm-config-env-scrubbed',
     expect: 'F6',
+    expectKey: 'npm-config:scrubbed:registry',
     env: { npm_config_registry: 'https://registry.npmjs.org/' },
   },
   {
     name: 'c1-userconfig-env-http',
     expect: 'F6',
+    expectKey: 'npm-config:effective:registry',
     setup: 'userconfig-env',
   },
   {
     name: 'c1-npm_config_registry-env-http',
     expect: 'F6',
+    expectKey: 'npm-config:effective:registry',
     env: { npm_config_registry: 'http://from-env.example/' },
   },
-  { name: 'c2-strict-ssl-false', expect: 'F6' },
-  { name: 'c2-proxy-set', expect: 'F6' },
-  { name: 'c2-replace-registry-host', expect: 'F6' },
+  { name: 'c2-strict-ssl-false', expect: 'F6', expectKey: 'npm-config:scrubbed:strict-ssl' },
+  { name: 'c2-proxy-set', expect: 'F6', expectKey: 'npm-config:scrubbed:proxy' },
+  { name: 'c2-replace-registry-host', expect: 'F6', expectKey: 'npm-config:scrubbed:replace-registry-host' },
   {
     name: 'c5-glob-matches-symlink-out',
     expect: 'F9',
@@ -143,6 +147,48 @@ const CASES = [
   { name: 'c7-bun-lock', expect: 'F7' },
   { name: 'c7-bun-lockb', expect: 'F7' },
   { name: 'c3-dsg-dir-in-pr', expect: 'PASS' },
+  { name: 'b1-cache-in-repo', expect: 'F6', expectKey: 'npm-config:scrubbed:cache' },
+  { name: 'b1-cache-via-userconfig', expect: 'F6', expectKey: 'npm-config:effective:cache' },
+  { name: 'b1-cache-abs-outside', expect: 'F6', expectKey: 'npm-config:scrubbed:cache' },
+  { name: 'b1-cache-uuid-hidden', expect: 'F6', expectKey: 'npm-config:scrubbed:cache' },
+  { name: 'b1-env-npm_config_cache', expect: 'F6', expectKey: 'npm-config:effective:cache', setup: 'cache-env' },
+  { name: 'b1-committed-cacache-no-npmrc', expect: 'F7', expectKey: 'c/_cacache' },
+  { name: 'b2-https-proxy-userinfo', expect: 'F6', expectKey: 'npm-config:scrubbed:https-proxy' },
+  { name: 'b2-proxy-userinfo', expect: 'F6', expectKey: 'npm-config:scrubbed:proxy' },
+  { name: 'b2-cafile-uuid', expect: 'F6', expectKey: 'npm-config:scrubbed:cafile' },
+  { name: 'b2-noproxy-uuid', expect: 'F6', expectKey: 'npm-config:scrubbed:noproxy' },
+  { name: 'b2-replace-host-uuid', expect: 'F6', expectKey: 'npm-config:scrubbed:replace-registry-host' },
+  { name: 'b2-unknown-hidden-key', expect: 'F6', expectKey: 'npm-config:scrubbed:foo' },
+  {
+    name: 'b2-text-pass-fails',
+    expect: 'F7',
+    expectKey: ['npm-config:scrubbed', 'npm-config:effective'],
+    setup: 'text-pass-fails',
+  },
+  { name: 'b2-npmjs-authtoken-allowed', expect: 'PASS', env: { NODE_AUTH_TOKEN: 'dsg-test-placeholder' } },
+  {
+    name: 'c8-resolved-userinfo',
+    expect: 'F3',
+    expectKey: ['package-lock.json:node_modules/pkg', 'package-lock.json:node_modules/other/node_modules/pkg'],
+  },
+  { name: 'c8-resolved-port', expect: 'F3', expectKey: 'package-lock.json:node_modules/pkg' },
+  { name: 'c8-registry-port', expect: 'F6', expectKey: 'npm-config:scrubbed:registry' },
+  { name: 'c2-noproxy-set', expect: 'F6', expectKey: 'npm-config:scrubbed:noproxy' },
+  { name: 'c2-ca-set', expect: 'F6', expectKey: 'npm-config:scrubbed:ca' },
+  { name: 'c2-cafile-set', expect: 'F6', expectKey: 'npm-config:scrubbed:cafile' },
+  { name: 'c2-cert-set', expect: 'F6', expectKey: 'npm-config:scrubbed:cert' },
+  {
+    name: 't3-NPM_CONFIG_REGISTRY-env-http',
+    expect: 'F6',
+    expectKey: 'npm-config:effective:registry',
+    forbidKey: 'npm-config:scrubbed',
+    env: { NPM_CONFIG_REGISTRY: 'http://from-env-upper.example/' },
+  },
+  { name: 't-c5-glob-matches-node_modules', expect: 'F9', expectKey: 'packages/node_modules', baseFromHead: true },
+  { name: 'a1-package-json-not-file', expect: 'F7', expectKey: 'package.json', setup: 'manifest-directory' },
+  { name: 'a1-npmrc-too-large', expect: 'F7', expectKey: '.npmrc', setup: 'large-npmrc' },
+  { name: 'a8-https-proxy-env', expect: 'F6', expectKey: 'env:HTTPS_PROXY', env: { HTTPS_PROXY: 'http://127.0.0.1:9/' } },
+  { name: 'a8-unset-node-auth-token', expect: 'PASS' },
 ];
 
 function git(cwd, args) {
@@ -158,18 +204,22 @@ function git(cwd, args) {
 
 function initGit(dir) {
   git(dir, ['init', '-q']);
-  git(dir, ['config', 'user.email', 'dsg@example.test']);
-  git(dir, ['config', 'user.name', 'dsg']);
-  git(dir, ['config', 'commit.gpgsign', 'false']);
 }
 
-function commitAll(dir, message) {
+function snapshotTree(dir) {
   git(dir, ['add', '-A']);
-  git(dir, ['commit', '-q', '--allow-empty', '-m', message]);
-  return git(dir, ['rev-parse', 'HEAD']);
+  return git(dir, ['write-tree']);
 }
 
 function setupCase(dir, spec) {
+  if (spec.setup === 'manifest-directory') {
+    const manifest = join(dir, 'package.json');
+    rmSync(manifest);
+    mkdirSync(manifest);
+  }
+  if (spec.setup === 'large-npmrc') {
+    writeFileSync(join(dir, '.npmrc'), '; harmless comment\n'.repeat(60_000));
+  }
   if (spec.setup === 'symlink-tmp') {
     mkdirSync(join(dir, 'packages'), { recursive: true });
     const target = mkdtempSync(join(tmpdir(), 'dsg-outside-'));
@@ -194,6 +244,21 @@ function runCheck(dir, spec, baseSha) {
   };
   if (spec.setup === 'userconfig-env') {
     env.NPM_CONFIG_USERCONFIG = join(dir, 'userconfig.npmrc');
+  }
+  if (spec.setup === 'cache-env') {
+    env.npm_config_cache = join(dir, 'c');
+  }
+  if (spec.setup === 'text-pass-fails') {
+    const stubDir = join(dir, '.git');
+    writeFileSync(join(stubDir, 'npm'), [
+      '#!/bin/sh',
+      'if [ "$3" = "--json" ]; then',
+      '  PATH=${PATH#*:} exec npm "$@"',
+      'fi',
+      'exit 1',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    env.PATH = `${stubDir}:${env.PATH}`;
   }
   const args = [script, '--root', dir, '--base-sha', baseSha, ...(spec.extraArgs || [])];
   const result = spawnSync(process.execPath, args, {
@@ -229,7 +294,6 @@ for (const spec of CASES) {
     initGit(dir);
     let baseSha = ZERO;
     if (spec.baseSha) {
-      commitAll(dir, 'head');
       baseSha = spec.baseSha;
     } else if (spec.basePackage) {
       const pkgPath = join(dir, 'package.json');
@@ -237,16 +301,12 @@ for (const spec of CASES) {
         ? JSON.parse(readFileSync(pkgPath, 'utf8'))
         : null;
       writeFileSync(pkgPath, `${JSON.stringify(spec.basePackage, null, 2)}\n`);
-      baseSha = commitAll(dir, 'base');
+      baseSha = snapshotTree(dir);
       if (headPkg) {
         writeFileSync(pkgPath, `${JSON.stringify(headPkg, null, 2)}\n`);
       }
-      commitAll(dir, 'head');
     } else if (spec.baseFromHead) {
-      baseSha = commitAll(dir, 'base-and-head');
-    } else {
-      commitAll(dir, 'head');
-      baseSha = ZERO;
+      baseSha = snapshotTree(dir);
     }
     const result = runCheck(dir, spec, baseSha);
     if (result.error) {
@@ -273,6 +333,20 @@ for (const spec of CASES) {
         if (!re.test(result.out)) {
           failures.push(`${spec.name}: missing ${code}\n${result.out}`);
         }
+      }
+    }
+    const findings = result.out.split('\n').flatMap((line) => {
+      const match = /^FAIL (F[0-9]+) ([^(]+) \(/.exec(line);
+      return match ? [{ code: match[1], key: match[2] }] : [];
+    });
+    for (const key of [spec.expectKey ?? []].flat()) {
+      if (!findings.some((finding) => codes.includes(finding.code) && finding.key.includes(key))) {
+        failures.push(`${spec.name}: missing finding key ${key}\n${result.out}`);
+      }
+    }
+    for (const key of [spec.forbidKey ?? []].flat()) {
+      if (findings.some((finding) => finding.key.includes(key))) {
+        failures.push(`${spec.name}: forbidden finding key ${key}\n${result.out}`);
       }
     }
     if (failures[failures.length - 1]?.startsWith(`${spec.name}:`)) {
