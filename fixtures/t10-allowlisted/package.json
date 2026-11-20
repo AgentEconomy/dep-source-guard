@@ -1,0 +1,8 @@
+{
+  "name": "t10-allowlisted",
+  "private": true,
+  "version": "1.0.0",
+  "devDependencies": {
+    "foo": "npm:bar@1"
+  }
+}

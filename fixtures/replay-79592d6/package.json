@@ -1,0 +1,9 @@
+{
+  "name": "replay-79592d6",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Reconstructed from agentpay-mcp commit 79592d6",
+  "overrides": {
+    "picomatch": "npm:@ryotsu/picomatch@4.0.7-a"
+  }
+}
